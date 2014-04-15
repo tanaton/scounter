@@ -28,10 +28,10 @@ const (
 
 	DAT_CACHE_TIME_THREAD     = 20
 	DAT_CACHE_TIME_BOARD      = 7
-	DAT_MAX_SIZE              = 614400 * 2
+	DAT_MAX_SIZE              = 614400 * 5
 	DAT_NOT_REQUEST_ADD_MOD   = 157680000  // 5年間
-	DAT_NOT_REQUEST_RES_COUNT = 2000       // 2000レスを超えていたらリクエストしないようにする
-	DAT_NOT_SIZE_LIMIT        = 524288 * 2 // しきい値
+	DAT_NOT_REQUEST_RES_COUNT = 1000 * 10  // 10000レスを超えていたらリクエストしないようにする
+	DAT_NOT_SIZE_LIMIT        = 524288 * 5 // しきい値
 
 	FILE_SUBJECT_TXT     = "subject.txt"
 	FILE_SUBJECT_TXT_REQ = "subject.txt"

@@ -177,12 +177,15 @@ func getThread(tl []Nich, board string) {
 	}
 	for _, nich := range tl {
 		old, err := g_cache.GetData(nich.server, nich.board, nich.thread)
+		if err != nil {
+			old = []byte{}
+		}
 		get := get2ch.NewGet2ch(nich.board, nich.thread)
 		data, err := get.GetData()
 		if err != nil {
-			gLogger.Printf(err.Error() + "\n")
+			gLogger.Println(err)
 			gLogger.Printf("%s/%s/%s\n", nich.server, nich.board, nich.thread)
-		} else if get.GetHttpCode()/100 == 2 {
+		} else if (get.GetHttpCode()/100) == 2 && len(data) > len(old) {
 			// カウント処理
 			scCount(data[len(old):], sc)
 			gLogger.Printf("%d OK %s/%s/%s\n", get.GetHttpCode(), nich.server, nich.board, nich.thread)
