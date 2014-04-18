@@ -914,7 +914,6 @@ func (g2ch *Get2ch) checkNoRequest(data []byte, flag bool) int64 {
 		cacheflag := false
 
 		if g2ch.NumLines(data) >= DAT_NOT_REQUEST_RES_COUNT {
-			// 2000res以上
 			cacheflag = true
 		} else if len(data) > DAT_NOT_SIZE_LIMIT {
 			// 1Mbyteよりも大きい
