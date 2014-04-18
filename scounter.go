@@ -25,16 +25,16 @@ type ScCountPacket struct {
 }
 
 type KeyPacket struct {
-	key string
-	killch <-chan struct{}
+	key    string
+	killch chan struct{}
 }
 
 const (
 	GO_THREAD_SLEEP_TIME = 2 * time.Second
-GO_BOARD_SLEEP_TIME = 5 * time.Second
-DAY = time.Hour * 24
-ROOT_PATH = "/2ch_sc/dat"
-OUTPUT_PATH = "/2ch_sc/scount"
+	GO_BOARD_SLEEP_TIME  = 5 * time.Second
+	DAY                  = time.Hour * 24
+	ROOT_PATH            = "/2ch_sc/dat"
+	OUTPUT_PATH          = "/2ch_sc/scount"
 )
 
 var g_reg_bbs = regexp.MustCompile(`(.+\.2ch\.sc)/(.+)<>`)
@@ -152,7 +152,7 @@ func checkOpen(ch <-chan struct{}) bool {
 	return true
 }
 
-func mainThread(key string, bl []Nich, sync chan<- KeyPacket, killch <-chan struct{}) {
+func mainThread(key string, bl []Nich, sync chan<- KeyPacket, killch chan struct{}) {
 	for _, nich := range bl {
 		// 板の取得
 		tl := getBoard(nich)
@@ -168,7 +168,10 @@ func mainThread(key string, bl []Nich, sync chan<- KeyPacket, killch <-chan stru
 		time.Sleep(GO_BOARD_SLEEP_TIME)
 	}
 	time.Sleep(GO_THREAD_SLEEP_TIME)
-	sync <- key
+	sync <- KeyPacket{
+		key:    key,
+		killch: killch,
+	}
 }
 
 func getServer() map[string][]Nich {
@@ -246,7 +249,7 @@ func threadResList(nich Nich) map[string]int {
 	return h
 }
 
-func getThread(tl []Nich, board string, killch <-chan struct{}) {
+func getThread(tl []Nich, board string, killch chan struct{}) {
 	sc := &ScCountPacket{
 		board: board,
 		count: make(map[int64]int, 5),
