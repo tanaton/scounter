@@ -34,7 +34,7 @@ const (
 	GO_BOARD_SLEEP_TIME  = 5 * time.Second
 	DAY                  = time.Hour * 24
 	ROOT_PATH            = "/2ch_sc/dat"
-	OUTPUT_PATH          = "/2ch_sc/scount"
+	COUNT_PATH           = "/2ch_sc/scount"
 )
 
 var g_reg_bbs = regexp.MustCompile(`(.+\.2ch\.sc)/(.+)<>`)
@@ -60,57 +60,57 @@ func main() {
 	get2ch.Start(g_cache, nil)
 	// 今までのキャッシュを読み込み
 	loadRes()
-	sync := make(chan KeyPacket)
+	notice := make(chan KeyPacket)
 	sl := getServer()
 	nsl := sl
 	// メイン処理
-	startCrawler(nsl, sync)
+	startCrawler(nsl, notice)
 
 	tick := time.Tick(time.Minute * 10)
-	for it := range sync {
+	for {
 		select {
 		case <-tick:
+			// 10分毎に板一覧を更新
 			nsl = getServer()
-		default:
-		}
-		var flag bool
-		if len(sl) != len(nsl) {
-			// 鯖が増減した
-			flag = true
-		} else if _, ok := nsl[it.key]; !ok {
-			// 鯖が消えた
-			flag = true
-		}
+		case it := <-notice:
+			// どこかの鯖のクロールが終わった
+			var flag bool
+			if len(sl) != len(nsl) {
+				// 鯖が増減した
+				flag = true
+			} else if _, ok := nsl[it.key]; !ok {
+				// 鯖が消えた
+				flag = true
+			}
 
-		if flag {
-			// 今のクローラーを殺す
-			close(it.killch)
-			// 鯖を更新
-			sl = nsl
-			// 新クローラーの立ち上げ
-			startCrawler(nsl, sync)
-		} else if checkOpen(it.killch) {
-			// クロール復帰
-			go mainThread(it.key, nsl[it.key], sync, it.killch)
+			if flag {
+				// 今のクローラーを殺す
+				close(it.killch)
+				// 鯖を更新
+				sl = nsl
+				// 新クローラーの立ち上げ
+				startCrawler(nsl, notice)
+			} else if checkOpen(it.killch) {
+				// クロール復帰
+				go mainThread(it.key, nsl[it.key], notice, it.killch)
+			}
 		}
 	}
 }
 
-func startCrawler(sl map[string][]Nich, sync chan<- KeyPacket) {
+func startCrawler(sl map[string][]Nich, notice chan<- KeyPacket) {
 	killch := make(chan struct{})
 	for key, it := range sl {
-		go mainThread(key, it, sync, killch)
+		go mainThread(key, it, notice, killch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 }
 
 func loadRes() {
-	now := time.Now().UTC()
-	loadResDay(now.Add(DAY * 1 * -1))
-	loadResDay(now.Add(DAY * 2 * -1))
-	loadResDay(now.Add(DAY * 3 * -1))
-	loadResDay(now.Add(DAY * 4 * -1))
-	loadResDay(now.Add(DAY * 5 * -1))
+	now := time.Now()	// UTCにしない
+	for i := 0; i < 5; i++ {
+		loadResDay(now.Add(DAY * time.Duration(i) * -1))
+	}
 }
 
 func loadResDay(t time.Time) {
@@ -152,7 +152,7 @@ func checkOpen(ch <-chan struct{}) bool {
 	return true
 }
 
-func mainThread(key string, bl []Nich, sync chan<- KeyPacket, killch chan struct{}) {
+func mainThread(key string, bl []Nich, notice chan<- KeyPacket, killch chan struct{}) {
 	for _, nich := range bl {
 		// 板の取得
 		tl := getBoard(nich)
@@ -168,7 +168,7 @@ func mainThread(key string, bl []Nich, sync chan<- KeyPacket, killch chan struct
 		time.Sleep(GO_BOARD_SLEEP_TIME)
 	}
 	time.Sleep(GO_THREAD_SLEEP_TIME)
-	sync <- KeyPacket{
+	notice <- KeyPacket{
 		key:    key,
 		killch: killch,
 	}
@@ -382,5 +382,5 @@ func writeFile(k int64, bm map[string]int) {
 }
 
 func createPath(t time.Time) string {
-	return OUTPUT_PATH + "/" + t.Format("2006_01_02") + ".txt"
+	return COUNT_PATH + "/" + t.Format("2006_01_02") + ".txt"
 }
