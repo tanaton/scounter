@@ -256,18 +256,19 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 		count: make(map[int64]int, 5),
 	}
 	for _, nich := range tl {
-		old, err := g_cache.GetData(nich.server, nich.board, nich.thread)
-		if err != nil {
-			old = []byte{}
+		var size int64
+		st, err := g_cache.Stat(nich.server, nich.board, nich.thread)
+		if err == nil {
+			size = st.Size()
 		}
 		get := get2ch.NewGet2ch(nich.board, nich.thread)
 		data, err := get.GetData()
 		if err != nil {
 			gLogger.Println(err)
 			gLogger.Printf("%s/%s/%s\n", nich.server, nich.board, nich.thread)
-		} else if (get.GetHttpCode()/100) == 2 && len(data) > len(old) {
+		} else if (get.GetHttpCode()/100) == 2 && int64(len(data)) > size {
 			// カウント処理
-			scCount(data[len(old):], sc)
+			scCount(data[size:], sc)
 			gLogger.Printf("%d OK %s/%s/%s\n", get.GetHttpCode(), nich.server, nich.board, nich.thread)
 		}
 		if checkOpen(killch) == false {
