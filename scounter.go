@@ -2,6 +2,7 @@ package main
 
 import (
 	"./get2ch"
+	"./kill"
 	"bufio"
 	"bytes"
 	"fmt"
@@ -107,8 +108,8 @@ func startCrawler(sl map[string][]Nich, notice chan<- KeyPacket) {
 }
 
 func loadRes() {
-	now := time.Now()	// UTCにしない
-	for i := 0; i < 5; i++ {
+	now := time.Now() // UTCにしない
+	for i := 0; i < 3; i++ {
 		loadResDay(now.Add(DAY * time.Duration(i) * -1))
 	}
 }
@@ -281,7 +282,7 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 }
 
 func scCount(data []byte, sc *ScCountPacket) {
-	before := time.Now().Add(DAY * 5 * -1).UTC()
+	before := time.Now().Add(DAY * 3 * -1).UTC()
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		list := strings.Split(scanner.Text(), "<>")
@@ -328,17 +329,21 @@ func scCountProc() chan<- *ScCountPacket {
 	go func(ch <-chan *ScCountPacket) {
 		wc := time.Tick(time.Minute * 5)
 		delc := time.Tick(time.Hour * 24)
-		m := make(map[int64]map[string]int, 10)
+		killc := kill.CreateKillChan()
+		m := make(map[int64]map[string]int, 5)
 		for {
 			select {
+			case <-killc:
+				// 終了時にファイルに書き出し
+				storeData(m)
+				// 強制終了
+				os.Exit(1)
 			case <-wc:
 				// 5分毎にファイルに書き出し
-				for key, bm := range m {
-					writeFile(key, bm)
-				}
+				storeData(m)
 			case now := <-delc:
-				// 5日以上前のデータを削除
-				unix := now.Add(DAY * 5 * -1).UTC().Unix()
+				// 3日以上前のデータを削除
+				unix := now.Add(DAY * 3 * -1).UTC().Unix()
 				dl := []int64{}
 				for key, _ := range m {
 					if key < unix {
@@ -364,6 +369,12 @@ func scCountProc() chan<- *ScCountPacket {
 		}
 	}(ch)
 	return ch
+}
+
+func storeData(m map[int64]map[string]int) {
+	for key, bm := range m {
+		writeFile(key, bm)
+	}
 }
 
 func writeFile(k int64, bm map[string]int) {
