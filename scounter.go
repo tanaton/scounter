@@ -23,6 +23,7 @@ type Nich struct {
 type ScCountPacket struct {
 	board string
 	count map[int64]int
+	id    map[int64]map[string]struct{}
 }
 
 type KeyPacket struct {
@@ -42,6 +43,7 @@ var g_reg_bbs = regexp.MustCompile(`(.+\.2ch\.sc)/(.+)<>`)
 var g_reg_dat = regexp.MustCompile(`^(.+)\.dat<>`)
 var g_reg_res = regexp.MustCompile(` \(([0-9]+)\)$`)
 var g_reg_date = regexp.MustCompile(`(\d{1,4})\/(\d{1,2})\/(\d{1,2})`)
+var g_reg_id = regexp.MustCompile(` ID:([\w!\+/]+)`)
 var g_cache = get2ch.NewFileCache(ROOT_PATH)
 
 var gScCountCh chan<- *ScCountPacket
@@ -134,9 +136,17 @@ func loadResDay(t time.Time) {
 		sc := &ScCountPacket{
 			board: list[0],
 			count: make(map[int64]int, 1),
+			id:    make(map[int64]map[string]struct{}, 1),
 		}
 		date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 		sc.count[date.Unix()] = res
+		if len(list) >= 2 {
+			id := make(map[string]struct{}, 16)
+			for _, it := range list[2:] {
+				id[it] = struct{}{}
+			}
+			sc.id[date.Unix()] = id
+		}
 		// ロードする
 		gScCountCh <- sc
 	}
@@ -254,6 +264,7 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 	sc := &ScCountPacket{
 		board: board,
 		count: make(map[int64]int, 5),
+		id:    make(map[int64]map[string]struct{}, 5),
 	}
 	for _, nich := range tl {
 		var size int64
@@ -298,7 +309,17 @@ func scCount(data []byte, sc *ScCountPacket) {
 			}
 			t := convertTime(m[1:])
 			if before.Before(t) {
-				sc.count[t.Unix()] += 1
+				u := t.Unix()
+				sc.count[u] += 1
+
+				if id := g_reg_id.FindStringSubmatch(list[2]); id != nil {
+					m, ok := sc.id[u]
+					if ok == false {
+						m = make(map[string]struct{}, 16)
+						sc.id[u] = m
+					}
+					m[id[1]] = struct{}{}
+				}
 			}
 		}
 	}
@@ -332,16 +353,17 @@ func scCountProc() chan<- *ScCountPacket {
 		delc := time.Tick(time.Hour * 24)
 		killc := kill.CreateKillChan()
 		m := make(map[int64]map[string]int, 5)
+		idm := make(map[int64]map[string]map[string]struct{}, 5)
 		for {
 			select {
 			case <-killc:
 				// 終了時にファイルに書き出し
-				storeData(m)
+				storeData(m, idm)
 				// 強制終了
 				os.Exit(1)
 			case <-wc:
 				// 5分毎にファイルに書き出し
-				storeData(m)
+				storeData(m, idm)
 			case now := <-delc:
 				// 3日以上前のデータを削除
 				unix := now.Add(DAY * 3 * -1).UTC().Unix()
@@ -366,19 +388,41 @@ func scCountProc() chan<- *ScCountPacket {
 						m[key] = bm
 					}
 				}
+				for key, idmap := range it.id {
+					bidm, ok := idm[key]
+					if ok {
+						mtmp, ok2 := bidm[it.board]
+						if ok2 == false {
+							mtmp = make(map[string]struct{}, 16)
+						}
+						for id, _ := range idmap {
+							mtmp[id] = struct{}{}
+						}
+						bidm[it.board] = mtmp
+					} else {
+						bidm = make(map[string]map[string]struct{}, 256)
+						// idmapそのまま使えばいい気もするけど、念のためコピー
+						mtmp := make(map[string]struct{}, 16)
+						for id, _ := range idmap {
+							mtmp[id] = struct{}{}
+						}
+						bidm[it.board] = mtmp
+						idm[key] = bidm
+					}
+				}
 			}
 		}
 	}(ch)
 	return ch
 }
 
-func storeData(m map[int64]map[string]int) {
+func storeData(m map[int64]map[string]int, idm map[int64]map[string]map[string]struct{}) {
 	for key, bm := range m {
-		writeFile(key, bm)
+		writeFile(key, bm, idm[key])
 	}
 }
 
-func writeFile(k int64, bm map[string]int) {
+func writeFile(k int64, bm map[string]int, idm map[string]map[string]struct{}) {
 	date := time.Unix(k, 0).UTC()
 	path := createPath(date)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0766)
@@ -388,7 +432,15 @@ func writeFile(k int64, bm map[string]int) {
 	defer f.Close()
 	w := bufio.NewWriter(f)
 	for board, num := range bm {
-		fmt.Fprintf(w, "%s\t%d\n", board, num)
+		fmt.Fprintf(w, "%s\t%d", board, num)
+		if idm != nil {
+			if tmpm, ok := idm[board]; ok {
+				for id, _ := range tmpm {
+					w.WriteString("\t" + id)
+				}
+			}
+		}
+		w.WriteString("\n")
 	}
 	w.Flush()
 }
