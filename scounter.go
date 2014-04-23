@@ -31,9 +31,9 @@ type KeyPacket struct {
 }
 
 type SaveItem struct {
-	Board string
-	Count int
-	Id    map[string]int
+	Count  int
+	Thread int
+	Id     map[string]int
 }
 
 const (
@@ -52,6 +52,7 @@ var g_reg_id = regexp.MustCompile(` ID:([\w!\+/]+)`)
 var g_cache = get2ch.NewFileCache(ROOT_PATH)
 
 var gScCountCh chan<- *ScCountPacket
+var gNotice chan<- KeyPacket
 var gLogger = log.New(os.Stdout, "", log.LstdFlags)
 
 var g_filter map[string]bool = map[string]bool{
@@ -68,11 +69,11 @@ func main() {
 	get2ch.Start(g_cache, nil)
 	// 今までのキャッシュを読み込み
 	loadRes()
-	notice := make(chan KeyPacket)
+	notice := createKeyPacketChan()
 	sl := getServer()
 	nsl := sl
-	// メイン処理
-	startCrawler(nsl, notice)
+	// クローラーの立ち上げ
+	startCrawler(nsl)
 
 	tick := time.Tick(time.Minute * 10)
 	for {
@@ -83,11 +84,12 @@ func main() {
 		case it := <-notice:
 			// どこかの鯖のクロールが終わった
 			var flag bool
-			if len(sl) != len(nsl) {
-				// 鯖が増減した
-				flag = true
-			} else if _, ok := nsl[it.key]; !ok {
+			bl, ok := nsl[it.key]
+			if !ok {
 				// 鯖が消えた
+				flag = true
+			} else if len(sl) != len(nsl) {
+				// 鯖が増減した
 				flag = true
 			}
 
@@ -97,19 +99,22 @@ func main() {
 				// 鯖を更新
 				sl = nsl
 				// 新クローラーの立ち上げ
-				startCrawler(nsl, notice)
-			} else if checkOpen(it.killch) {
+				startCrawler(nsl)
+			} else if checkOpen(it.killch) && len(bl) > 0 {
 				// クロール復帰
-				go mainThread(it.key, nsl[it.key], notice, it.killch)
+				go mainThread(it.key, append(make([]Nich, 0, len(bl)), bl...), it.killch)
 			}
 		}
 	}
 }
 
-func startCrawler(sl map[string][]Nich, notice chan<- KeyPacket) {
+func startCrawler(sl map[string][]Nich) {
 	killch := make(chan struct{})
 	for key, it := range sl {
-		go mainThread(key, it, notice, killch)
+		l := len(it)
+		if l > 0 {
+			go mainThread(key, append(make([]Nich, 0, l), it...), killch)
+		}
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 }
@@ -155,7 +160,7 @@ func checkOpen(ch <-chan struct{}) bool {
 	return true
 }
 
-func mainThread(key string, bl []Nich, notice chan<- KeyPacket, killch chan struct{}) {
+func mainThread(key string, bl []Nich, killch chan struct{}) {
 	for _, nich := range bl {
 		// 板の取得
 		tl := getBoard(nich)
@@ -170,8 +175,7 @@ func mainThread(key string, bl []Nich, notice chan<- KeyPacket, killch chan stru
 		// 少し待機
 		time.Sleep(GO_BOARD_SLEEP_TIME)
 	}
-	time.Sleep(GO_THREAD_SLEEP_TIME)
-	notice <- KeyPacket{
+	gNotice <- KeyPacket{
 		key:    key,
 		killch: killch,
 	}
@@ -180,7 +184,7 @@ func mainThread(key string, bl []Nich, notice chan<- KeyPacket, killch chan stru
 func getServer() map[string][]Nich {
 	var nich Nich
 	get := get2ch.NewGet2ch("", "")
-	sl := make(map[string][]Nich)
+	sl := make(map[string][]Nich, 16)
 	// 更新時間を取得しない
 	data := get.GetBBSmenu(false)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -191,12 +195,17 @@ func getServer() map[string][]Nich {
 			if _, ok := g_filter[nich.server]; ok {
 				continue
 			}
-			if h, ok := sl[nich.server]; ok {
-				sl[nich.server] = append(h, nich)
-			} else {
-				sl[nich.server] = []Nich{nich}
+			nl, ok := sl[nich.server]
+			if !ok {
+				nl = make([]Nich, 0, 32)
 			}
+			sl[nich.server] = append(nl, nich)
 		}
+	}
+	// 余分な領域を削る
+	for board, it := range sl {
+		l := len(it)
+		sl[board] = it[:l:l]
 	}
 	return sl
 }
@@ -210,7 +219,7 @@ func getBoard(nich Nich) []Nich {
 		return nil
 	}
 	get.GetBoardName()
-	vect := make([]Nich, 0, 128)
+	vect := make([]Nich, 0, 32)
 	var n Nich
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -230,7 +239,8 @@ func getBoard(nich Nich) []Nich {
 			}
 		}
 	}
-	return vect
+	l := len(vect)
+	return vect[:l:l]
 }
 
 func threadResList(nich Nich) map[string]int {
@@ -268,10 +278,13 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 		if err != nil {
 			gLogger.Println(err)
 			gLogger.Printf("%s/%s/%s\n", nich.server, nich.board, nich.thread)
-		} else if (get.GetHttpCode()/100) == 2 && int64(len(data)) > size {
-			// カウント処理
-			scCount(data[size:], sc)
-			gLogger.Printf("%d OK %s/%s/%s\n", get.GetHttpCode(), nich.server, nich.board, nich.thread)
+		} else {
+			code := get.GetHttpCode()
+			if (code/100) == 2 && int64(len(data)) > size {
+				// カウント処理
+				scCount(data[size:], sc, code == 200 && size == 0)
+				gLogger.Printf("%d OK %s/%s/%s\n", code, nich.server, nich.board, nich.thread)
+			}
 		}
 		if checkOpen(killch) == false {
 			// 緊急停止
@@ -284,10 +297,12 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 	}
 }
 
-func scCount(data []byte, sc *ScCountPacket) {
+func scCount(data []byte, sc *ScCountPacket, newth bool) {
+	lineno := 0
 	before := time.Now().UTC().Add(DAY * 3 * -1)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
+		lineno++
 		list := strings.Split(scanner.Text(), "<>")
 		if len(list) < 3 {
 			continue
@@ -300,19 +315,22 @@ func scCount(data []byte, sc *ScCountPacket) {
 			}
 			t := convertTime(m[1:])
 			if before.Before(t) {
+				// scの書き込み
 				u := t.Unix()
 				ti, ok := sc.item[u]
 				if !ok {
-					ti = &SaveItem{
-						Board: sc.board,
-						Id:    make(map[string]int, 16),
-					}
+					ti = createSaveItem()
 					sc.item[u] = ti
 				}
 				ti.Count += 1
 
 				if id := g_reg_id.FindStringSubmatch(list[2]); id != nil {
+					// ID付き
 					ti.Id[id[1]] += 1
+				}
+				if newth && lineno == 1 {
+					// scで立てられたスレッド
+					ti.Thread++
 				}
 			}
 		}
@@ -377,24 +395,17 @@ func scCountProc() chan<- *ScCountPacket {
 					if ok {
 						bsi, ok = si[sc.board]
 						if !ok {
-							bsi = &SaveItem{
-								Board: sc.board,
-								Id:    make(map[string]int, 16),
-							}
+							bsi = createSaveItem()
 							si[sc.board] = bsi
 						}
-						bsi.Count += item.Count
 					} else {
 						si = make(map[string]*SaveItem, 256)
-						bsi = &SaveItem{
-							Board: sc.board,
-							Count: item.Count,
-							Id:    make(map[string]int, 16),
-						}
+						bsi = createSaveItem()
 						si[sc.board] = bsi
 						m[u] = si
 					}
-
+					bsi.Count += item.Count
+					bsi.Thread += item.Thread
 					for id, idcount := range item.Id {
 						bsi.Id[id] += idcount
 					}
@@ -418,12 +429,24 @@ func writeFile(k int64, bm map[string]*SaveItem) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 	w := bufio.NewWriter(f)
 	json.NewEncoder(w).Encode(bm)
 	w.Flush()
+	f.Close()
 }
 
 func createPath(t time.Time) string {
 	return COUNT_PATH + "/" + t.Format("2006_01_02") + ".json"
+}
+
+func createKeyPacketChan() <-chan KeyPacket {
+	notice := make(chan KeyPacket, 1)
+	gNotice = notice
+	return notice
+}
+
+func createSaveItem() *SaveItem {
+	return &SaveItem{
+		Id: make(map[string]int, 16),
+	}
 }
