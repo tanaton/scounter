@@ -41,7 +41,7 @@ const (
 	GO_BOARD_SLEEP_TIME  = 5 * time.Second
 	DAY                  = time.Hour * 24
 	ROOT_PATH            = "/2ch_sc/dat"
-	COUNT_PATH           = "/2ch_sc/scount"
+	COUNT_PATH           = "/2ch_sc/scount.json"
 )
 
 var g_reg_bbs = regexp.MustCompile(`(.+\.2ch\.sc)/(.+)<>`)
