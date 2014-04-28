@@ -27,6 +27,7 @@ type ScCountPacket struct {
 
 type KeyPacket struct {
 	key    string
+	bl     []Nich
 	killch chan struct{}
 }
 
@@ -70,10 +71,10 @@ func main() {
 	// 今までのキャッシュを読み込み
 	loadRes()
 	notice := createKeyPacketChan()
-	sl := getServer()
-	nsl := sl
+	nsl := getServer()
+	sl := copyServerList(nsl)
 	// クローラーの立ち上げ
-	startCrawler(nsl)
+	startCrawler(sl)
 
 	tick := time.Tick(time.Minute * 10)
 	for {
@@ -84,8 +85,7 @@ func main() {
 		case it := <-notice:
 			// どこかの鯖のクロールが終わった
 			var flag bool
-			bl, ok := nsl[it.key]
-			if !ok {
+			if _, ok := nsl[it.key]; !ok {
 				// 鯖が消えた
 				flag = true
 			} else if len(sl) != len(nsl) {
@@ -97,24 +97,31 @@ func main() {
 				// 今のクローラーを殺す
 				close(it.killch)
 				// 鯖を更新
-				sl = nsl
+				sl = copyServerList(nsl)
 				// 新クローラーの立ち上げ
-				startCrawler(nsl)
-			} else if checkOpen(it.killch) && len(bl) > 0 {
+				startCrawler(sl)
+			} else if checkOpen(it.killch) {
 				// クロール復帰
-				go mainThread(it.key, append(make([]Nich, 0, len(bl)), bl...), it.killch)
+				go mainThread(it.key, it.bl, it.killch)
 			}
 		}
 	}
 }
 
+func copyServerList(sl map[string][]Nich) (ret map[string][]Nich) {
+	ret = make(map[string][]Nich, len(sl))
+	for key, it := range sl {
+		tmp := make([]Nich, len(it))
+		copy(tmp, it)
+		ret[key] = tmp
+	}
+	return
+}
+
 func startCrawler(sl map[string][]Nich) {
 	killch := make(chan struct{})
 	for key, it := range sl {
-		l := len(it)
-		if l > 0 {
-			go mainThread(key, append(make([]Nich, 0, l), it...), killch)
-		}
+		go mainThread(key, it, killch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 }
@@ -175,8 +182,10 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 		// 少し待機
 		time.Sleep(GO_BOARD_SLEEP_TIME)
 	}
+	time.Sleep(GO_BOARD_SLEEP_TIME)
 	gNotice <- KeyPacket{
 		key:    key,
+		bl:     bl,
 		killch: killch,
 	}
 }
