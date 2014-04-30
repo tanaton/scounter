@@ -25,12 +25,6 @@ type ScCountPacket struct {
 	item  map[int64]*SaveItem
 }
 
-type KeyPacket struct {
-	key    string
-	bl     []Nich
-	killch chan struct{}
-}
-
 type SaveItem struct {
 	Count  int
 	Thread int
@@ -53,7 +47,6 @@ var g_reg_id = regexp.MustCompile(` ID:([\w!\+/]+)`)
 var g_cache = get2ch.NewFileCache(ROOT_PATH)
 
 var gScCountCh chan<- *ScCountPacket
-var gNotice chan<- KeyPacket
 var gLogger = log.New(os.Stdout, "", log.LstdFlags)
 
 var g_filter map[string]bool = map[string]bool{
@@ -70,40 +63,38 @@ func main() {
 	get2ch.Start(g_cache, nil)
 	// 今までのキャッシュを読み込み
 	loadRes()
-	notice := createKeyPacketChan()
 	nsl := getServer()
 	sl := copyServerList(nsl)
 	// クローラーの立ち上げ
-	startCrawler(sl)
+	killch := startCrawler(sl)
 
 	tick := time.Tick(time.Minute * 10)
-	for {
-		select {
-		case <-tick:
-			// 10分毎に板一覧を更新
-			nsl = getServer()
-		case it := <-notice:
-			// どこかの鯖のクロールが終わった
-			var flag bool
-			if _, ok := nsl[it.key]; !ok {
-				// 鯖が消えた
-				flag = true
-			} else if len(sl) != len(nsl) {
-				// 鯖が増減した
-				flag = true
-			}
+	for _ = range tick {
+		// 10分毎に板一覧を更新
+		gLogger.Printf("Update server list\n")
+		// 更新
+		nsl = getServer()
 
-			if flag {
-				// 今のクローラーを殺す
-				close(it.killch)
-				// 鯖を更新
-				sl = copyServerList(nsl)
-				// 新クローラーの立ち上げ
-				startCrawler(sl)
-			} else if checkOpen(it.killch) {
-				// クロール復帰
-				go mainThread(it.key, it.bl, it.killch)
+		var flag bool
+		if len(sl) != len(nsl) {
+			// 鯖が増減した
+			flag = true
+		} else {
+			for key, _ := range nsl {
+				if _, ok := sl[key]; !ok {
+					flag = true
+					break
+				}
 			}
+		}
+
+		if flag {
+			// 今のクローラーを殺す
+			close(killch)
+			// 鯖を更新
+			sl = copyServerList(nsl)
+			// 新クローラーの立ち上げ
+			killch = startCrawler(sl)
 		}
 	}
 }
@@ -118,12 +109,17 @@ func copyServerList(sl map[string][]Nich) (ret map[string][]Nich) {
 	return
 }
 
-func startCrawler(sl map[string][]Nich) {
-	killch := make(chan struct{})
+func startCrawler(sl map[string][]Nich) (killch chan struct{}) {
+	// 新クローラー立ち上げ
+	gLogger.Printf("========== startCrawler start ==========\n")
+	killch = make(chan struct{})
 	for key, it := range sl {
+		gLogger.Printf("Server:%s, Board_len:%d\n", key, len(it))
 		go mainThread(key, it, killch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
+	gLogger.Printf("========== startCrawler end ==========\n")
+	return
 }
 
 func loadRes() {
@@ -168,12 +164,21 @@ func checkOpen(ch <-chan struct{}) bool {
 }
 
 func mainThread(key string, bl []Nich, killch chan struct{}) {
-	for _, nich := range bl {
-		// 板の取得
-		tl := getBoard(nich)
-		if tl != nil && len(tl) > 0 {
-			// スレッドの取得
-			getThread(tl, nich.board, killch)
+	for {
+		for _, nich := range bl {
+			// 板の取得
+			gLogger.Printf("%s/%s\n", nich.server, nich.board)
+			tl := getBoard(nich)
+			if tl != nil && len(tl) > 0 {
+				// スレッドの取得
+				getThread(tl, nich.board, killch)
+			}
+			if checkOpen(killch) == false {
+				// 緊急停止
+				break
+			}
+			// 少し待機
+			time.Sleep(GO_BOARD_SLEEP_TIME)
 		}
 		if checkOpen(killch) == false {
 			// 緊急停止
@@ -181,12 +186,6 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 		}
 		// 少し待機
 		time.Sleep(GO_BOARD_SLEEP_TIME)
-	}
-	time.Sleep(GO_BOARD_SLEEP_TIME)
-	gNotice <- KeyPacket{
-		key:    key,
-		bl:     bl,
-		killch: killch,
 	}
 }
 
@@ -254,7 +253,7 @@ func getBoard(nich Nich) []Nich {
 
 func threadResList(nich Nich) map[string]int {
 	data, err := g_cache.GetData(nich.server, nich.board, "")
-	h := make(map[string]int)
+	h := make(map[string]int, 1024)
 	if err != nil {
 		return h
 	}
@@ -293,6 +292,8 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 				// カウント処理
 				scCount(data[size:], sc, code == 200 && size == 0)
 				gLogger.Printf("%d OK %s/%s/%s\n", code, nich.server, nich.board, nich.thread)
+			} else {
+				gLogger.Printf("%d NG %s/%s/%s\n", code, nich.server, nich.board, nich.thread)
 			}
 		}
 		if checkOpen(killch) == false {
@@ -446,12 +447,6 @@ func writeFile(k int64, bm map[string]*SaveItem) {
 
 func createPath(t time.Time) string {
 	return COUNT_PATH + "/" + t.Format("2006_01_02") + ".json"
-}
-
-func createKeyPacketChan() <-chan KeyPacket {
-	notice := make(chan KeyPacket, 1)
-	gNotice = notice
-	return notice
 }
 
 func createSaveItem() *SaveItem {
