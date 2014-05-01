@@ -26,10 +26,7 @@ const (
 	BOURBON_TIME    time.Duration = 1 * time.Minute
 	BOARD_NAME_TIME time.Duration = 24 * time.Hour
 
-	DAT_CACHE_TIME_THREAD     = 20
-	DAT_CACHE_TIME_BOARD      = 7
 	DAT_MAX_SIZE              = 614400 * 5
-	DAT_NOT_REQUEST_ADD_MOD   = 157680000  // 5年間
 	DAT_NOT_REQUEST_RES_COUNT = 1000 * 10  // 10000レスを超えていたらリクエストしないようにする
 	DAT_NOT_SIZE_LIMIT        = 524288 * 5 // しきい値
 
@@ -616,29 +613,13 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 
 		st, err := g2ch.cache.Stat(server, board, thread)
 		if flag && err == nil {
-			timem := st.Mmod()
-			timea := st.Amod()
-			if req_time < timem {
-				// dat落ちしている場合
-				g2ch.code = 302
-				g2ch.cache_mod = timem
-				return
-			} else if (req_time < (timem + DAT_CACHE_TIME_THREAD)) || (req_time < (timea + DAT_CACHE_TIME_THREAD)) {
-				// 前回の取得から数秒しか経過していない場合
-				// 変更なしとする
-				g2ch.code = 429
-				return
-			} else {
-				// 多重書き込みを防ぐため早めに取得待機時間を延長しておく
-				g2ch.cache.SetMod(server, board, thread, timem, req_time)
-				size := st.Size()
-				if size > 1 {
-					// 1バイト引いても差分取得ができる場合
-					// 1バイト引いて取得する
-					req.Header.Set("Range", "bytes="+strconv.Itoa(int(size-1))+"-")
-				}
-				req.Header.Set("If-Modified-Since", unlib.CreateModString(timem))
+			size := st.Size()
+			if size > 1 {
+				// 1バイト引いても差分取得ができる場合
+				// 1バイト引いて取得する
+				req.Header.Set("Range", "bytes="+strconv.Itoa(int(size-1))+"-")
 			}
+			req.Header.Set("If-Modified-Since", unlib.CreateModString(st.Mmod()))
 		} else {
 			// 差分取得は使えないためここで設定
 			req.Header.Set("Accept-Encoding", "gzip")
@@ -652,17 +633,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 		req.Header.Set("User-Agent", USER_AGENT)
 
 		if st, err := g2ch.cache.Stat(server, board, ""); err == nil {
-			timem := st.Mmod()
-			timea := st.Amod()
-			if (req_time < (timem + DAT_CACHE_TIME_BOARD)) || (req_time < (timea + DAT_CACHE_TIME_BOARD)) {
-				// 前回の取得から数秒しか経過していない場合
-				// 変更なしとする
-				g2ch.code = 429
-				return
-			}
-			// 早めに取得待機時間を延長しておく
-			g2ch.cache.SetMod(server, board, "", timem, req_time)
-			req.Header.Set("If-Modified-Since", unlib.CreateModString(timem))
+			req.Header.Set("If-Modified-Since", unlib.CreateModString(st.Mmod()))
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 	} else {
@@ -728,7 +699,6 @@ func (g2ch *Get2ch) normalData(reget bool) []byte {
 	var err error
 	// データ取得
 	data := g2ch.request(reget)
-	time := g2ch.req_time
 	if g2ch.isThread() {
 		switch g2ch.code {
 		case 200:
@@ -755,11 +725,6 @@ func (g2ch *Get2ch) normalData(reget bool) []byte {
 				g2ch.mod = st.Mmod()
 				if g2ch.size < DAT_MAX_SIZE {
 					data, _ = g2ch.cache.GetData(g2ch.server, g2ch.board, g2ch.thread)
-					if g2ch.mod <= time {
-						mod := time + DAT_NOT_REQUEST_ADD_MOD
-						g2ch.cache.SetMod(g2ch.server, g2ch.board, g2ch.thread, mod, mod)
-						g2ch.mod = mod
-					}
 				} else {
 					data = g2ch.dataError()
 				}
@@ -844,11 +809,6 @@ func (g2ch *Get2ch) createCache(data []byte, switch_data int) error {
 	switch switch_data {
 	case DAT_CREATE:
 		append_data = false
-		if g2ch.isThread() {
-			// スレッドの場合
-			// これから先にリクエストを送る必要がないか判断する
-			mod = g2ch.checkNoRequest(data, false)
-		}
 	case DAT_APPEND:
 		if len(data) > 0 {
 			// データが存在するので追記
@@ -865,11 +825,6 @@ func (g2ch *Get2ch) createCache(data []byte, switch_data int) error {
 				renew = false
 			}
 		}
-		if g2ch.isThread() {
-			// スレッドの場合
-			// これから先にリクエストを送る必要がないか判断する
-			mod = g2ch.checkNoRequest(data, false)
-		}
 		break
 	default:
 		// 何もしない
@@ -882,13 +837,6 @@ func (g2ch *Get2ch) createCache(data []byte, switch_data int) error {
 		if append_data {
 			// 追記する
 			g2ch.cache.SetDataAppend(g2ch.server, g2ch.board, g2ch.thread, data) // 追記
-			if g2ch.isThread() {
-				// これから先にリクエストを送る必要がないか判断する
-				var err error
-				if data, err = g2ch.cache.GetData(g2ch.server, g2ch.board, g2ch.thread); err == nil {
-					mod = g2ch.checkNoRequest(data, false)
-				}
-			}
 		} else {
 			g2ch.cache.SetData(g2ch.server, g2ch.board, g2ch.thread, data) // 上書き
 		}
@@ -904,32 +852,6 @@ func (g2ch *Get2ch) createCache(data []byte, switch_data int) error {
 		}
 	}
 	return nil
-}
-
-func (g2ch *Get2ch) checkNoRequest(data []byte, flag bool) int64 {
-	mod := g2ch.cache_mod
-
-	if g2ch.isThread() {
-		// スレッドの場合
-		cacheflag := false
-
-		if g2ch.NumLines(data) >= DAT_NOT_REQUEST_RES_COUNT {
-			cacheflag = true
-		} else if len(data) > DAT_NOT_SIZE_LIMIT {
-			// 1Mbyteよりも大きい
-			cacheflag = true
-		}
-
-		if cacheflag {
-			// 5年後まで読みに行かないようにする
-			mod = g2ch.req_time + DAT_NOT_REQUEST_ADD_MOD
-			if flag {
-				// 未来の時間を設定する
-				g2ch.cache.SetMod(g2ch.server, g2ch.board, g2ch.thread, mod, mod)
-			}
-		}
-	}
-	return mod
 }
 
 func (g2ch *Get2ch) readThread() (data []byte, err error) {
