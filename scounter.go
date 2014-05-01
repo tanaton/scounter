@@ -167,7 +167,6 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 	for {
 		for _, nich := range bl {
 			// 板の取得
-			gLogger.Printf("%s/%s\n", nich.server, nich.board)
 			tl := getBoard(nich)
 			if tl != nil && len(tl) > 0 {
 				// スレッドの取得
@@ -219,16 +218,21 @@ func getServer() map[string][]Nich {
 }
 
 func getBoard(nich Nich) []Nich {
-	get := get2ch.NewGet2ch(nich.board, "")
 	h := threadResList(nich)
+	get := get2ch.NewGet2ch(nich.board, "")
 	data, err := get.GetData()
 	if err != nil {
 		gLogger.Printf(err.Error() + "\n")
 		return nil
 	}
-	get.GetBoardName()
-	vect := make([]Nich, 0, 32)
+	code := get.GetHttpCode()
+	gLogger.Printf("%d %s/%s\n", code, nich.server, nich.board)
+	if code != 200 {
+		return nil
+	}
+
 	var n Nich
+	vect := make([]Nich, 0, 32)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		it := scanner.Text()
