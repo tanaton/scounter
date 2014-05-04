@@ -228,6 +228,7 @@ func getBoard(nich Nich) []Nich {
 	code := get.GetHttpCode()
 	gLogger.Printf("%d %s/%s\n", code, nich.server, nich.board)
 	if code != 200 {
+		gLogger.Println(get.GetError())
 		return nil
 	}
 

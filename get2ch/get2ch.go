@@ -628,6 +628,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 		// スレッド一覧取得用header生成
 		req, err = http.NewRequest("GET", "http://"+g2ch.salami+server+"/"+board+"/"+FILE_SUBJECT_TXT_REQ, nil)
 		if err != nil {
+			g2ch.err = err
 			return
 		}
 		req.Header.Set("User-Agent", USER_AGENT)
