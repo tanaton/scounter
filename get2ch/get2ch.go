@@ -638,6 +638,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 	} else {
+		g2ch.err = errors.New("スレッドもしくは板ではありません。")
 		g2ch.code = 0
 		return
 	}
@@ -650,12 +651,14 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 	if err != nil {
 		// errがnil以外の場合、resp.Bodyは閉じられている
 		if resp == nil {
+			g2ch.err = err
 			g2ch.code = 0
 		} else {
 			if rerr := unlib.GetRedirectError(err); rerr != nil {
 				// RedirectErrorだった場合は処理続行
 				g2ch.code = resp.StatusCode
 			} else {
+				g2ch.err = err
 				g2ch.code = 0
 			}
 		}
@@ -667,6 +670,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 	// 読み込み
 	data, err = responseRead(resp)
 	if err != nil {
+		g2ch.err = err
 		g2ch.code = 0
 		return nil
 	}
