@@ -321,7 +321,6 @@ func responseRead(resp *http.Response) (data []byte, err error) {
 }
 
 func getHttpBBSmenu(cache Cache) (data []byte, mod int64, err error) {
-	client := newHttpClient()
 	// header生成
 	req, nrerr := http.NewRequest("GET", "http://"+g_salami+CONF_ITAURL_HOST+"/"+CONF_ITAURL_FILE, nil)
 	if nrerr != nil {
@@ -334,7 +333,7 @@ func getHttpBBSmenu(cache Cache) (data []byte, mod int64, err error) {
 	}
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Connection", "close")
-	resp, doerr := client.Do(req)
+	resp, doerr := newHttpClient().Do(req)
 	if doerr != nil {
 		return nil, 0, doerr
 	}
@@ -531,7 +530,6 @@ func (g2ch *Get2ch) getSettingFile() ([]byte, error) {
 		return unlib.ShiftJISToUtf8(cdata), nil
 	}
 
-	client := newHttpClient()
 	// header生成
 	req, nrerr := http.NewRequest("GET", "http://"+g2ch.salami+server+"/"+board+"/"+FILE_SETTING_TXT_REQ, nil)
 	if nrerr != nil {
@@ -540,7 +538,7 @@ func (g2ch *Get2ch) getSettingFile() ([]byte, error) {
 	req.Header.Set("User-Agent", USER_AGENT)
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Connection", "close")
-	resp, doerr := client.Do(req)
+	resp, doerr := newHttpClient().Do(req)
 	if doerr != nil {
 		return nil, doerr
 	}
@@ -646,8 +644,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 
 	// リクエスト送信
 	var resp *http.Response
-	client := newHttpClient()
-	resp, err = client.Do(req)
+	resp, err = newHttpClient().Do(req)
 	if err != nil {
 		// errがnil以外の場合、resp.Bodyは閉じられている
 		if resp == nil {

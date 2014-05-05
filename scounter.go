@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -32,11 +33,13 @@ type SaveItem struct {
 }
 
 const (
-	GO_THREAD_SLEEP_TIME = 2 * time.Second
-	GO_BOARD_SLEEP_TIME  = 5 * time.Second
-	DAY                  = time.Hour * 24
-	ROOT_PATH            = "/2ch_sc/dat"
-	COUNT_PATH           = "/2ch_sc/scount.json"
+	GO_THREAD_SLEEP_TIME   = 2 * time.Second
+	GO_BOARD_SLEEP_TIME    = 5 * time.Second
+	GO_NETERROR_SLEEP_TIME = 1 * time.Minute
+	SERVER_LIST_INTERVAL   = 10 * time.Minute
+	DAY                    = time.Hour * 24
+	ROOT_PATH              = "/2ch_sc/dat"
+	COUNT_PATH             = "/2ch_sc/scount.json"
 )
 
 var g_reg_bbs = regexp.MustCompile(`(.+\.2ch\.sc)/(.+)<>`)
@@ -68,7 +71,7 @@ func main() {
 	// クローラーの立ち上げ
 	killch := startCrawler(sl)
 
-	tick := time.Tick(time.Minute * 10)
+	tick := time.Tick(SERVER_LIST_INTERVAL)
 	for _ = range tick {
 		// 10分毎に板一覧を更新
 		gLogger.Printf("Update server list\n")
@@ -167,10 +170,16 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 	for {
 		for _, nich := range bl {
 			// 板の取得
-			tl := getBoard(nich)
-			if tl != nil && len(tl) > 0 {
-				// スレッドの取得
-				getThread(tl, nich.board, killch)
+			tl, err := getBoard(nich)
+			if err == nil {
+				if len(tl) > 0 {
+					// スレッドの取得
+					getThread(tl, nich.board, killch)
+				}
+			} else if _, ok := err.(net.Error); ok {
+				// net系エラーが発生した場合
+				// とりあえず待機
+				time.Sleep(GO_NETERROR_SLEEP_TIME)
 			}
 			if checkOpen(killch) == false {
 				// 緊急停止
@@ -217,19 +226,20 @@ func getServer() map[string][]Nich {
 	return sl
 }
 
-func getBoard(nich Nich) []Nich {
+func getBoard(nich Nich) ([]Nich, error) {
 	h := threadResList(nich)
 	get := get2ch.NewGet2ch(nich.board, "")
 	data, err := get.GetData()
 	if err != nil {
 		gLogger.Printf(err.Error() + "\n")
-		return nil
+		return nil, err
 	}
 	code := get.GetHttpCode()
 	gLogger.Printf("%d %s/%s\n", code, nich.server, nich.board)
 	if code != 200 {
-		gLogger.Println(get.GetError())
-		return nil
+		err := get.GetError()
+		gLogger.Println(err)
+		return nil, err
 	}
 
 	var n Nich
@@ -253,7 +263,7 @@ func getBoard(nich Nich) []Nich {
 		}
 	}
 	l := len(vect)
-	return vect[:l:l]
+	return vect[:l:l], nil
 }
 
 func threadResList(nich Nich) map[string]int {
