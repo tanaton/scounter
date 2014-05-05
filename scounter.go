@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
-	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -176,8 +175,8 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 					// スレッドの取得
 					getThread(tl, nich.board, killch)
 				}
-			} else if _, ok := err.(net.Error); ok {
-				// net系エラーが発生した場合
+			} else {
+				// エラーが発生した場合
 				// とりあえず待機
 				time.Sleep(GO_NETERROR_SLEEP_TIME)
 			}
