@@ -62,7 +62,10 @@ func init() {
 
 func main() {
 	// get2ch開始
-	get2ch.Start(g_cache, nil)
+	get2ch.Start(g_cache, &get2ch.Salami{
+		Host: "127.0.0.1",
+		Port: 18080,
+	})
 	// 今までのキャッシュを読み込み
 	loadRes()
 	nsl := getServer()
