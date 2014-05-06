@@ -236,6 +236,8 @@ func getBoard(nich Nich) ([]Nich, error) {
 	data, err := get.GetData()
 	if err != nil {
 		gLogger.Println(err)
+		gLogger.Println(nich)
+		gLogger.Println(get)
 		return nil, err
 	}
 	code := get.GetHttpCode()
