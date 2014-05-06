@@ -232,10 +232,6 @@ func NewGet2ch(board, thread string) *Get2ch {
 	return g2ch
 }
 
-func (g2ch *Get2ch) String() string {
-	return fmt.Sprintf("get2ch obj:%+v\n", g2ch)
-}
-
 func (g2ch *Get2ch) GetData() (data []byte, err error) {
 	// 初期化
 	g2ch.size = 0

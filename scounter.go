@@ -7,8 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"log"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"regexp"
 	"strconv"
@@ -63,9 +61,6 @@ func init() {
 }
 
 func main() {
-	go func() {
-		gLogger.Println(http.ListenAndServe("localhost:6061", nil))
-	}()
 	// get2ch開始
 	get2ch.Start(g_cache, nil)
 	// 今までのキャッシュを読み込み
@@ -237,7 +232,7 @@ func getBoard(nich Nich) ([]Nich, error) {
 	if err != nil {
 		gLogger.Println(err)
 		gLogger.Println(nich)
-		gLogger.Println(get)
+		gLogger.Printf("get2ch obj:%+v\n", get)
 		return nil, err
 	}
 	code := get.GetHttpCode()
