@@ -551,7 +551,7 @@ func (g2ch *Get2ch) getSettingFile() ([]byte, error) {
 		// 読み込む
 		if data, err = responseRead(resp); err == nil {
 			g2ch.cache.SetData(server, board, BOARD_SETTING, data)
-			mod := req_time + (3600 * 24 * 7)
+			mod := req_time + 3600
 			g2ch.cache.SetMod(server, board, BOARD_SETTING, mod, mod)
 		}
 	} else {
