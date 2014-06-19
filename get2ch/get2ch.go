@@ -1,6 +1,7 @@
 package get2ch
 
 import (
+	"./process"
 	"./unlib"
 	"bufio"
 	"bytes"
@@ -19,27 +20,13 @@ import (
 )
 
 const (
-	CONF_FOLDER      = "/2ch_sc/dat" // dat保管フォルダ名
-	CONF_ITAURL_HOST = "menu.2ch.sc" // 板情報取得URL
-	CONF_ITAURL_FILE = "bbsmenu.html"
-
-	BOURBON_TIME    time.Duration = 1 * time.Minute
-	BOARD_NAME_TIME time.Duration = 24 * time.Hour
-
-	DAT_MAX_SIZE              = 614400 * 5
-	DAT_NOT_REQUEST_RES_COUNT = 1000 * 10  // 10000レスを超えていたらリクエストしないようにする
-	DAT_NOT_SIZE_LIMIT        = 524288 * 5 // しきい値
-
-	FILE_SUBJECT_TXT     = "subject.txt"
+	CONF_ITAURL_HOST     = "menu.2ch.sc" // 板情報取得URL
+	CONF_ITAURL_FILE     = "bbsmenu.html"
 	FILE_SUBJECT_TXT_REQ = "subject.txt"
-	FILE_SETTING_TXT     = "setting.txt"
 	FILE_SETTING_TXT_REQ = "SETTING.TXT"
-
-	VIEW_THREAD_LIST_SIZE = 100
-
-	TIMEOUT_SEC time.Duration = 12 * time.Second
-
-	USER_AGENT = "Monazilla/1.00 (scounter)"
+	TIMEOUT_SEC          = 12 * time.Second
+	DAT_MAX_SIZE         = 614400
+	USER_AGENT           = "Monazilla/1.00 (scounter)"
 )
 
 const (
@@ -81,7 +68,7 @@ type Get2ch struct {
 	thread    string
 	req_time  int64
 	cache     Cache
-	numlines  int // 行数
+	numlines  int  // 行数
 	salami    string
 }
 
@@ -116,30 +103,14 @@ var sabakill = map[string]bool{
 	"watch.2ch.sc":        true,
 }
 
-type hideData struct {
-	server string
-	name   string
-}
-
 var RegServerItem = regexp.MustCompile(`<B>([^<]+)<\/B>`)
 var RegServer = regexp.MustCompile(`<A HREF=http:\/\/([^\/]+)\/([^\/]+)\/>([^<]+)<\/A>`)
-
-type boardServerPacket struct {
-	board string
-	rch   chan<- string
-}
-
-type boardNamePacket struct {
-	board string
-	name  string
-	rch   chan<- string
-}
-
 var g_once sync.Once
-var boardServerCh chan<- boardServerPacket
-var boardNameCh chan<- boardNamePacket
+var boardServerObj *process.BoardServerBox
+var boardNameObj *process.BoardNameBox
 var g_cache Cache
 var g_salami string
+var g_user_agent string
 var g_started bool
 var tanpanman = []byte{0x92, 0x5A, 0x83, 0x70, 0x83, 0x93, 0x83, 0x7d, 0x83, 0x93, 0x20, 0x81, 0x9a}
 var nagoyaee = []byte{0x96, 0xBC, 0x8C, 0xC3, 0x89, 0xAE, 0x82, 0xCD, 0x83, 0x47, 0x81, 0x60, 0x83, 0x47, 0x81, 0x60, 0x82, 0xC5}
@@ -151,8 +122,9 @@ func Start(c Cache, s *Salami) {
 	g_once.Do(func() {
 		SetCache(c)
 		SetSalami(s)
-		boardServerCh = boardServerListProc()
-		boardNameCh = boardNameProc()
+		SetUserAgent(USER_AGENT)
+		boardServerObj = process.NewBoardServerBox(setServerList)
+		boardNameObj = process.NewBoardNameBox()
 		g_started = true
 	})
 }
@@ -171,44 +143,13 @@ func SetCache(c Cache) {
 	}
 }
 
-func boardServerListProc() chan<- boardServerPacket {
-	wch := make(chan boardServerPacket, 4)
-	go func(wch <-chan boardServerPacket) {
-		m := setServerList()
-		c := time.Tick(10 * time.Minute)
-		for {
-			select {
-			case <-c:
-				m = setServerList()
-			case it := <-wch:
-				if it.rch != nil {
-					it.rch <- m[it.board]
-				}
-			}
-		}
-	}(wch)
-	return wch
+func SetUserAgent(ua string) {
+	g_user_agent = ua
 }
 
-func boardNameProc() chan<- boardNamePacket {
-	reqch := make(chan boardNamePacket, 4)
-	go func(reqch <-chan boardNamePacket) {
-		m := make(map[string]string)
-		for it := range reqch {
-			if it.rch != nil {
-				// 返信
-				it.rch <- m[it.board]
-			} else {
-				m[it.board] = it.name
-			}
-		}
-	}(reqch)
-	return reqch
-}
-
-func NewGet2ch(board, thread string) *Get2ch {
+func NewGet2ch(board, thread string) (*Get2ch, error) {
 	if g_started == false {
-		return nil
+		return nil, errors.New("初期化されていません。")
 	}
 	g2ch := &Get2ch{
 		size:      0,
@@ -229,7 +170,7 @@ func NewGet2ch(board, thread string) *Get2ch {
 	if _, err := strconv.ParseInt(thread, 10, 64); err == nil {
 		g2ch.thread = thread
 	}
-	return g2ch
+	return g2ch, nil
 }
 
 func (g2ch *Get2ch) GetData() (data []byte, err error) {
@@ -243,7 +184,6 @@ func (g2ch *Get2ch) GetData() (data []byte, err error) {
 
 	// 通常取得
 	data = g2ch.normalData(true)
-
 	err = g2ch.err
 	// SJIS-winで返す
 	return
@@ -326,11 +266,7 @@ func getHttpBBSmenu(cache Cache) (data []byte, mod int64, err error) {
 	if nrerr != nil {
 		return nil, 0, nrerr
 	}
-	req.Header.Set("User-Agent", USER_AGENT)
-	// 更新確認
-	if st, merr := cache.Stat("", "", ""); merr == nil {
-		req.Header.Set("If-Modified-Since", unlib.CreateModString(st.Mmod()))
-	}
+	req.Header.Set("User-Agent", g_user_agent)
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Connection", "close")
 	resp, doerr := newHttpClient().Do(req)
@@ -394,24 +330,8 @@ func saveBBSmenu(cache Cache) []byte {
 	return data.Bytes()
 }
 
-func (g2ch *Get2ch) GetBBSmenu(flag bool) (data []byte) { // trueがデフォルト
-	if g2ch.cache.Exists("", "", "") == false {
-		// 存在しない場合取得する
-		data = saveBBSmenu(g2ch.cache)
-	}
-	if flag {
-		if st, err := g2ch.cache.Stat("", "", ""); err == nil {
-			g2ch.mod = st.Mmod()
-		}
-	}
-	if data == nil {
-		var err error
-		data, err = g2ch.cache.GetData("", "", "")
-		if err != nil {
-			data = nil
-		}
-	}
-	return
+func (g2ch *Get2ch) GetBBSmenu() ([]byte, error) {
+	return g2ch.cache.GetData("", "", "")
 }
 
 func (g2ch *Get2ch) GetServer(board_key string) string {
@@ -419,13 +339,7 @@ func (g2ch *Get2ch) GetServer(board_key string) string {
 	if board_key == "" {
 		retdata = g2ch.server
 	} else {
-		ch := make(chan string, 1) // バッファが無いと低速？
-		boardServerCh <- boardServerPacket{
-			board: board_key,
-			rch:   ch,
-		}
-		retdata = <-ch
-		close(ch)
+		retdata = boardServerObj.GetServer(board_key)
 	}
 	return retdata
 }
@@ -479,29 +393,16 @@ func getBoardNameSub(bd string) string {
 
 // 板名取得
 func (g2ch *Get2ch) GetBoardName() (boardname string) {
-	ch := make(chan string, 1) // バッファが無いと低速？
-	rbnp := boardNamePacket{
-		board: g2ch.board,
-		rch:   ch,
-	}
 	// 板名マップの探索
-	boardNameCh <- rbnp
-	// 受信
-	boardname = <-ch
-	close(ch)
+	boardname = boardNameObj.GetName(g2ch.board)
 
 	if boardname == "" {
 		boardname = g2ch.sliceBoardName()
 		if boardname == "" {
 			boardname = getBoardNameSub(g2ch.board)
 		}
-
-		bnp := boardNamePacket{
-			board: g2ch.board,
-			name:  boardname,
-		}
 		// 空白でも登録
-		boardNameCh <- bnp
+		boardNameObj.SetName(g2ch.board, boardname)
 	}
 	return
 }
@@ -531,7 +432,7 @@ func (g2ch *Get2ch) getSettingFile() ([]byte, error) {
 	if nrerr != nil {
 		return nil, nrerr
 	}
-	req.Header.Set("User-Agent", USER_AGENT)
+	req.Header.Set("User-Agent", g_user_agent)
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Header.Set("Connection", "close")
 	resp, doerr := newHttpClient().Do(req)
@@ -603,7 +504,7 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 		if err != nil {
 			return
 		}
-		req.Header.Set("User-Agent", USER_AGENT)
+		req.Header.Set("User-Agent", g_user_agent)
 
 		st, err := g2ch.cache.Stat(server, board, thread)
 		if flag && err == nil {
@@ -622,17 +523,15 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 		// スレッド一覧取得用header生成
 		req, err = http.NewRequest("GET", "http://"+g2ch.salami+server+"/"+board+"/"+FILE_SUBJECT_TXT_REQ, nil)
 		if err != nil {
-			g2ch.err = err
 			return
 		}
-		req.Header.Set("User-Agent", USER_AGENT)
+		req.Header.Set("User-Agent", g_user_agent)
 
 		if st, err := g2ch.cache.Stat(server, board, ""); err == nil {
 			req.Header.Set("If-Modified-Since", unlib.CreateModString(st.Mmod()))
 		}
 		req.Header.Set("Accept-Encoding", "gzip")
 	} else {
-		g2ch.err = errors.New("スレッドもしくは板ではありません。")
 		g2ch.code = 0
 		return
 	}
@@ -644,14 +543,12 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 	if err != nil {
 		// errがnil以外の場合、resp.Bodyは閉じられている
 		if resp == nil {
-			g2ch.err = err
 			g2ch.code = 0
 		} else {
 			if rerr := unlib.GetRedirectError(err); rerr != nil {
 				// RedirectErrorだった場合は処理続行
 				g2ch.code = resp.StatusCode
 			} else {
-				g2ch.err = err
 				g2ch.code = 0
 			}
 		}
@@ -663,7 +560,6 @@ func (g2ch *Get2ch) request(flag bool) (data []byte) {
 	// 読み込み
 	data, err = responseRead(resp)
 	if err != nil {
-		g2ch.err = err
 		g2ch.code = 0
 		return nil
 	}

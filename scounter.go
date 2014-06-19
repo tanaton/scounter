@@ -20,15 +20,20 @@ type Nich struct {
 	thread string
 }
 
-type ScCountPacket struct {
+type scCountPacket struct {
 	board string
-	item  map[int64]*SaveItem
+	item  map[int64]*saveItem
 }
 
-type SaveItem struct {
+type saveItem struct {
 	Count  int
 	Thread int
 	Id     map[string]int
+}
+
+type threadItem struct {
+	bl     []Nich
+	killch chan struct{}
 }
 
 const (
@@ -48,7 +53,7 @@ var g_reg_date = regexp.MustCompile(`(\d{1,4})\/(\d{1,2})\/(\d{1,2})`)
 var g_reg_id = regexp.MustCompile(` ID:([\w!\+/]+)`)
 var g_cache = get2ch.NewFileCache(ROOT_PATH)
 
-var gScCountCh chan<- *ScCountPacket
+var gScCountCh chan<- *scCountPacket
 var gLogger = log.New(os.Stdout, "", log.LstdFlags)
 
 var g_filter map[string]bool = map[string]bool{
@@ -71,35 +76,43 @@ func main() {
 	nsl := getServer()
 	sl := copyServerList(nsl)
 	// クローラーの立ち上げ
-	killch := startCrawler(sl)
+	rsch := make(chan threadItem, 1)
+	killch := startCrawler(sl, rsch)
 
 	tick := time.Tick(SERVER_LIST_INTERVAL)
-	for _ = range tick {
-		// 10分毎に板一覧を更新
-		gLogger.Printf("Update server list\n")
-		// 更新
-		nsl = getServer()
+	for {
+		select {
+		case <-tick:
+			// 10分毎に板一覧を更新
+			gLogger.Printf("Update server list\n")
+			// 更新
+			nsl = getServer()
 
-		var flag bool
-		if len(sl) != len(nsl) {
-			// 鯖が増減した
-			flag = true
-		} else {
-			for key, _ := range nsl {
-				if _, ok := sl[key]; !ok {
-					flag = true
-					break
+			var flag bool
+			if len(sl) != len(nsl) {
+				// 鯖が増減した
+				flag = true
+			} else {
+				for key, _ := range nsl {
+					if _, ok := sl[key]; !ok {
+						flag = true
+						break
+					}
 				}
 			}
-		}
 
-		if flag {
-			// 今のクローラーを殺す
-			close(killch)
-			// 鯖を更新
-			sl = copyServerList(nsl)
-			// 新クローラーの立ち上げ
-			killch = startCrawler(sl)
+			if flag {
+				// 今のクローラーを殺す
+				close(killch)
+				// 鯖を更新
+				sl = copyServerList(nsl)
+				// 新クローラーの立ち上げ
+				killch = startCrawler(sl, rsch)
+			}
+		case ti := <-rsch:
+			// 再起動
+			gLogger.Printf("Re-Start Board_len:%d\n", len(ti.bl))
+			go mainThread(ti, rsch)
 		}
 	}
 }
@@ -114,13 +127,13 @@ func copyServerList(sl map[string][]Nich) (ret map[string][]Nich) {
 	return
 }
 
-func startCrawler(sl map[string][]Nich) (killch chan struct{}) {
+func startCrawler(sl map[string][]Nich, rsch chan<- threadItem) (killch chan struct{}) {
 	// 新クローラー立ち上げ
 	gLogger.Printf("========== startCrawler start ==========\n")
 	killch = make(chan struct{})
 	for key, it := range sl {
 		gLogger.Printf("Server:%s, Board_len:%d\n", key, len(it))
-		go mainThread(key, it, killch)
+		go mainThread(threadItem{it, killch}, rsch)
 		time.Sleep(GO_THREAD_SLEEP_TIME)
 	}
 	gLogger.Printf("========== startCrawler end ==========\n")
@@ -143,14 +156,14 @@ func loadResDay(t time.Time) {
 	defer fp.Close()
 	date := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 	r := bufio.NewReader(fp)
-	data := map[string]*SaveItem{}
+	data := map[string]*saveItem{}
 	json.NewDecoder(r).Decode(&data)
 
 	// ロードする
 	for board, si := range data {
-		sc := &ScCountPacket{
+		sc := &scCountPacket{
 			board: board,
-			item:  make(map[int64]*SaveItem, 1),
+			item:  make(map[int64]*saveItem, 1),
 		}
 		sc.item[date.Unix()] = si
 		gScCountCh <- sc
@@ -168,29 +181,35 @@ func checkOpen(ch <-chan struct{}) bool {
 	return true
 }
 
-func mainThread(key string, bl []Nich, killch chan struct{}) {
+func mainThread(ti threadItem, rsch chan<- threadItem) {
+	defer func() {
+		if err := recover(); err != nil {
+			// panicで死亡
+			rsch <- ti
+		}
+	}()
 	for {
-		for _, nich := range bl {
+		for _, nich := range ti.bl {
 			// 板の取得
 			tl, err := getBoard(nich)
 			if err == nil {
 				if len(tl) > 0 {
 					// スレッドの取得
-					getThread(tl, nich.board, killch)
+					getThread(tl, nich.board, ti.killch)
 				}
 			} else {
 				// エラーが発生した場合
 				// とりあえず待機
 				time.Sleep(GO_NETERROR_SLEEP_TIME)
 			}
-			if checkOpen(killch) == false {
+			if checkOpen(ti.killch) == false {
 				// 緊急停止
 				break
 			}
 			// 少し待機
 			time.Sleep(GO_BOARD_SLEEP_TIME)
 		}
-		if checkOpen(killch) == false {
+		if checkOpen(ti.killch) == false {
 			// 緊急停止
 			break
 		}
@@ -201,10 +220,16 @@ func mainThread(key string, bl []Nich, killch chan struct{}) {
 
 func getServer() map[string][]Nich {
 	var nich Nich
-	get := get2ch.NewGet2ch("", "")
+	get, err := get2ch.NewGet2ch("", "")
+	if err != nil {
+		panic(err)
+	}
 	sl := make(map[string][]Nich, 16)
-	// 更新時間を取得しない
-	data := get.GetBBSmenu(false)
+	// bbsmenuの取得
+	data, err := get.GetBBSmenu()
+	if err != nil {
+		return sl
+	}
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		if d := g_reg_bbs.FindStringSubmatch(scanner.Text()); len(d) > 0 {
@@ -230,7 +255,10 @@ func getServer() map[string][]Nich {
 
 func getBoard(nich Nich) ([]Nich, error) {
 	h := threadResList(nich)
-	get := get2ch.NewGet2ch(nich.board, "")
+	get, err := get2ch.NewGet2ch(nich.board, "")
+	if err != nil {
+		panic(err)
+	}
 	data, err := get.GetData()
 	if err != nil {
 		gLogger.Println(err)
@@ -290,9 +318,9 @@ func threadResList(nich Nich) map[string]int {
 }
 
 func getThread(tl []Nich, board string, killch chan struct{}) {
-	sc := &ScCountPacket{
+	sc := &scCountPacket{
 		board: board,
-		item:  make(map[int64]*SaveItem, 5),
+		item:  make(map[int64]*saveItem, 5),
 	}
 	for _, nich := range tl {
 		var size int64
@@ -300,7 +328,10 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 		if err == nil {
 			size = st.Size()
 		}
-		get := get2ch.NewGet2ch(nich.board, nich.thread)
+		get, err := get2ch.NewGet2ch(nich.board, nich.thread)
+		if err != nil {
+			panic(err)
+		}
 		data, err := get.GetData()
 		if err != nil {
 			gLogger.Println(err)
@@ -326,7 +357,7 @@ func getThread(tl []Nich, board string, killch chan struct{}) {
 	}
 }
 
-func scCount(data []byte, sc *ScCountPacket, newth bool) {
+func scCount(data []byte, sc *scCountPacket, newth bool) {
 	lineno := 0
 	before := time.Now().UTC().Add(DAY * 3 * -1)
 	scanner := bufio.NewScanner(bytes.NewReader(data))
@@ -387,13 +418,13 @@ func convertTime(datelist []string) (t time.Time) {
 	return
 }
 
-func scCountProc() chan<- *ScCountPacket {
-	ch := make(chan *ScCountPacket, 32)
-	go func(ch <-chan *ScCountPacket) {
+func scCountProc() chan<- *scCountPacket {
+	ch := make(chan *scCountPacket, 32)
+	go func(ch <-chan *scCountPacket) {
 		wc := time.Tick(time.Minute * 3)
 		delc := time.Tick(time.Hour * 12)
 		killc := kill.CreateKillChan()
-		m := make(map[int64]map[string]*SaveItem, 3)
+		m := make(map[int64]map[string]*saveItem, 3)
 		for {
 			select {
 			case <-killc:
@@ -419,7 +450,7 @@ func scCountProc() chan<- *ScCountPacket {
 			case sc := <-ch:
 				// データの追加
 				for u, item := range sc.item {
-					var bsi *SaveItem
+					var bsi *saveItem
 					si, ok := m[u]
 					if ok {
 						bsi, ok = si[sc.board]
@@ -428,7 +459,7 @@ func scCountProc() chan<- *ScCountPacket {
 							si[sc.board] = bsi
 						}
 					} else {
-						si = make(map[string]*SaveItem, 256)
+						si = make(map[string]*saveItem, 256)
 						bsi = createSaveItem()
 						si[sc.board] = bsi
 						m[u] = si
@@ -445,13 +476,13 @@ func scCountProc() chan<- *ScCountPacket {
 	return ch
 }
 
-func storeData(m map[int64]map[string]*SaveItem) {
+func storeData(m map[int64]map[string]*saveItem) {
 	for key, bm := range m {
 		writeFile(key, bm)
 	}
 }
 
-func writeFile(k int64, bm map[string]*SaveItem) {
+func writeFile(k int64, bm map[string]*saveItem) {
 	date := time.Unix(k, 0).UTC()
 	path := createPath(date)
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0766)
@@ -468,8 +499,8 @@ func createPath(t time.Time) string {
 	return COUNT_PATH + "/" + t.Format("2006_01_02") + ".json"
 }
 
-func createSaveItem() *SaveItem {
-	return &SaveItem{
+func createSaveItem() *saveItem {
+	return &saveItem{
 		Id: make(map[string]int, 16),
 	}
 }

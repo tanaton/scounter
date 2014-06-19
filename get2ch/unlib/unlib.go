@@ -33,9 +33,9 @@ func ShiftJISToUtf8Reader(r io.Reader) io.Reader {
 }
 
 func Utf8ToShiftJIS(data []byte) []byte {
-	buf := bytes.Buffer{}
+	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
 	enc := mahonia.NewEncoder("cp932")
-	enc.NewWriter(&buf).Write(data)
+	enc.NewWriter(buf).Write(data)
 	return buf.Bytes()
 }
 func Utf8ToShiftJISWriter(w io.Writer) io.Writer {

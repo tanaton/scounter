@@ -53,13 +53,13 @@ func (fc *FileCache) GetData(s, b, t string) ([]byte, error) {
 
 func (fc *FileCache) SetData(s, b, t string, d []byte) error {
 	logfile := fc.Path(s, b, t)
-	os.MkdirAll(path.Dir(logfile), 0766)
-	return ioutil.WriteFile(logfile, d, 0744)
+	os.MkdirAll(path.Dir(logfile), 0777)
+	return ioutil.WriteFile(logfile, d, 0777)
 }
 
 func (fc *FileCache) SetDataAppend(s, b, t string, d []byte) error {
 	logfile := fc.Path(s, b, t)
-	fp, err := os.OpenFile(logfile, os.O_WRONLY|os.O_APPEND, 0744)
+	fp, err := os.OpenFile(logfile, os.O_WRONLY|os.O_APPEND, 0777)
 	if err != nil {
 		return err
 	}
